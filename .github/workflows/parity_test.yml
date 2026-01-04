@@ -61,6 +61,15 @@ jobs:
             exit 1
           }
 
+          # Compile original DLL coverage driver
+          & $csc /platform:x86 /out:original_coverage_driver.exe original_coverage_driver.cs
+          if ($LASTEXITCODE -eq 0 -and (Test-Path original_coverage_driver.exe)) {
+            Write-Host "[OK] original_coverage_driver.exe compiled successfully"
+          } else {
+            Write-Host "[FAIL] original_coverage_driver.exe compilation failed"
+            exit 1
+          }
+
       - name: Run parity tests
         timeout-minutes: 10
         run: |
@@ -182,11 +191,176 @@ jobs:
           name: test-results
           path: tests/results/
 
-  # DynamoRIO Binary Instrumentation for REAL code coverage of rebuilt DLL
-  # NOTE: Original DLL hangs without full host context, so we test rebuilt DLL
+  # OpenCppCoverage - Source-level coverage for rebuilt DLL
+  # Much simpler and more reliable than DynamoRIO for Windows
+  source-coverage:
+    runs-on: windows-latest
+    needs: parity-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install OpenCppCoverage
+        run: |
+          choco install opencppcoverage -y
+          # Add to PATH for this session
+          $env:Path += ";C:\Program Files\OpenCppCoverage"
+          echo "C:\Program Files\OpenCppCoverage" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile .NET test host
+        run: |
+          cd tests
+          $csc = "C:\Windows\Microsoft.NET\Framework\v2.0.50727\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v3.5\csc.exe"
+          }
+          & $csc /platform:x86 /out:coverage_test_driver.exe coverage_test_driver.cs
+
+      - name: Run tests with OpenCppCoverage
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          cd tests
+
+          Write-Host "========================================================================"
+          Write-Host "Running with OpenCppCoverage (source-level coverage)"
+          Write-Host "========================================================================"
+
+          # Create output directory
+          New-Item -ItemType Directory -Path coverage_report -Force
+
+          # Run with OpenCppCoverage
+          # --modules target.dll - only instrument our DLL
+          # --sources - filter to our source files (optional, for source view)
+          # --export_type html - generate HTML report
+          # --export_type cobertura - generate Cobertura XML for CI integration
+          & "C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe" `
+            --modules "target.dll" `
+            --export_type html:coverage_report `
+            --export_type cobertura:coverage.xml `
+            -- .\coverage_test_driver.exe "..\dlls\rebuilt\target.dll" "test_files"
+
+          $exit_code = $LASTEXITCODE
+          Write-Host "`nOpenCppCoverage exit code: $exit_code"
+
+          # Show summary from cobertura XML
+          if (Test-Path "coverage.xml") {
+            Write-Host "`n========================================================================"
+            Write-Host "Coverage Summary"
+            Write-Host "========================================================================"
+            [xml]$cov = Get-Content coverage.xml
+            $line_rate = [math]::Round([float]$cov.coverage.'line-rate' * 100, 1)
+            $branch_rate = [math]::Round([float]$cov.coverage.'branch-rate' * 100, 1)
+            Write-Host "Line Coverage: ${line_rate}%"
+            Write-Host "Branch Coverage: ${branch_rate}%"
+          }
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            tests/coverage_report/
+            tests/coverage.xml
+
+      - name: Upload coverage to Codecov (optional)
+        if: always()
+        uses: codecov/codecov-action@v4
+        continue-on-error: true  # Don't fail if Codecov not configured
+        with:
+          files: tests/coverage.xml
+          fail_ci_if_error: false
+
+  # OpenCppCoverage for ORIGINAL DLL
+  # This tests what code paths the original vendor DLL exercises
+  original-dll-coverage:
+    runs-on: windows-latest
+    needs: parity-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install OpenCppCoverage
+        run: |
+          choco install opencppcoverage -y
+          $env:Path += ";C:\Program Files\OpenCppCoverage"
+          echo "C:\Program Files\OpenCppCoverage" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile .NET test host for original DLL
+        run: |
+          cd tests
+          $csc = "C:\Windows\Microsoft.NET\Framework\v2.0.50727\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v3.5\csc.exe"
+          }
+          & $csc /platform:x86 /out:original_coverage_driver.exe original_coverage_driver.cs
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "[FAIL] Compilation failed"
+            exit 1
+          }
+          Write-Host "[OK] original_coverage_driver.exe compiled"
+
+      - name: Run tests with OpenCppCoverage on ORIGINAL DLL
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          cd tests
+
+          Write-Host "========================================================================"
+          Write-Host "Running with OpenCppCoverage on ORIGINAL target.dll"
+          Write-Host "========================================================================"
+
+          # Create output directory
+          New-Item -ItemType Directory -Path coverage_original -Force
+
+          # Run with OpenCppCoverage
+          # --modules target.dll - instrument the original DLL
+          # The original DLL may hang on some functions, but we capture coverage before that
+          & "C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe" `
+            --modules "target.dll" `
+            --export_type html:coverage_original `
+            --export_type cobertura:coverage_original.xml `
+            -- .\original_coverage_driver.exe "..\dlls\original\target.dll" "test_files"
+
+          $exit_code = $LASTEXITCODE
+          Write-Host "`nOpenCppCoverage exit code: $exit_code"
+
+          # Show summary from cobertura XML
+          if (Test-Path "coverage_original.xml") {
+            Write-Host "`n========================================================================"
+            Write-Host "Original DLL Coverage Summary"
+            Write-Host "========================================================================"
+            [xml]$cov = Get-Content coverage_original.xml
+            $line_rate = [math]::Round([float]$cov.coverage.'line-rate' * 100, 1)
+            $branch_rate = [math]::Round([float]$cov.coverage.'branch-rate' * 100, 1)
+            Write-Host "Line Coverage: ${line_rate}%"
+            Write-Host "Branch Coverage: ${branch_rate}%"
+          }
+
+          # Don't fail the job if coverage driver crashed after capturing data
+          if (Test-Path "coverage_original.xml") {
+            Write-Host "[OK] Coverage data captured for original DLL"
+            exit 0
+          }
+
+      - name: Upload original DLL coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-original-dll
+          path: |
+            tests/coverage_original/
+            tests/coverage_original.xml
+
+  # DynamoRIO Binary Instrumentation (OPTIONAL - kept for binary-level metrics)
+  # NOTE: Known issues with .NET CLR, may crash but still captures useful data
   binary-coverage:
     runs-on: windows-latest
-    needs: parity-test  # Only run if parity tests pass
+    needs: parity-test
+    if: false  # Disabled by default - enable with 'if: true' if needed
 
     steps:
       - name: Checkout code
