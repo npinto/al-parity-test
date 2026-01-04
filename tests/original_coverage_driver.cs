@@ -390,7 +390,9 @@ class OriginalCoverageDriver
 
         Log("Testing FileExistsW...");
 
-        // Test with existing file
+        // Test with existing file ONLY
+        // NOTE: On original DLL, testing non-existent files triggers MessageBox popup which hangs!
+        // Only test files that we KNOW exist
         TotalCalls++;
         try
         {
@@ -404,18 +406,8 @@ class OriginalCoverageDriver
             Log("  FileExists: EXCEPTION - " + ex.Message);
         }
 
-        // Test with non-existent file
-        TotalCalls++;
-        try
-        {
-            int notExists = fileExists("C:\\nonexistent\\file.xyz");
-            Log("  FileExists(nonexistent): " + notExists);
-            SuccessfulCalls++;
-        }
-        catch (Exception ex)
-        {
-            Log("  FileExists(nonexistent): EXCEPTION - " + ex.Message);
-        }
+        // DO NOT test non-existent files - causes MessageBox hang on original DLL!
+        Log("  [SKIP] Non-existent file test skipped (causes MessageBox hang on original DLL)");
     }
 
     static void TestWriteOperations(
