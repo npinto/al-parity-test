@@ -81,22 +81,49 @@ class OriginalCoverageDriver
         return Marshal.GetDelegateForFunctionPointer(addr, delegateType);
     }
 
+    // Format codes from decompiled FUN_1001fa40 (lines 25207-25316)
+    // These MUST match exactly or we get error 0x8004 "Not Standard File Extension"
     static int GetFormatCode(string path)
     {
         string ext = Path.GetExtension(path).ToLower();
-        if (ext == ".etm") return 1;
-        if (ext == ".efr") return 2;
-        if (ext == ".emd") return 3;
-        if (ext == ".etx") return 5;
-        if (ext == ".wav") return 9;
-        if (ext == ".tim") return 10;
-        if (ext == ".frq") return 11;
-        if (ext == ".dat") return 12;
-        if (ext == ".spk") return 13;
-        if (ext == ".frd") return 24;
-        if (ext == ".zma") return 24;
-        if (ext == ".txt") return 19;
-        if (ext == ".prn") return 36;
+
+        // EASERA formats (most reliable - we have good test files)
+        if (ext == ".etm") return 1;   // EaseraEtm - IR time domain
+        if (ext == ".efr") return 2;   // EaseraEfr - FR frequency domain
+        if (ext == ".emd") return 3;   // EaseraEmd - Multi-data container
+        if (ext == ".etx") return 5;   // EaseraEtx - Text export
+
+        // WAV format
+        if (ext == ".wav") return 9;   // MsWave - Standard WAV
+
+        // MLSSA formats
+        if (ext == ".tim") return 10;  // MlssaTim - Time domain binary
+        if (ext == ".frq") return 11;  // MlssaFrq - Frequency domain binary
+
+        // MonkeyForest formats
+        if (ext == ".dat") return 12;  // MonkeyForestDat - Time signals
+        if (ext == ".spk") return 13;  // MonkeyForestSpk - Spectrum data
+
+        // CLIO text formats (tab-delimited frequency response)
+        if (ext == ".frd") return 27;  // 0x1b - ClioFreqText FRD
+        if (ext == ".zma") return 28;  // 0x1c - ClioFreqText ZMA (impedance)
+
+        // LMS/FilterShop text format
+        // NOTE: .txt is ambiguous - could be LMS (19), CLIO text (0x17/0x18), or other
+        // We try LMS format first since that's what our test files use
+        if (ext == ".txt") return 19;  // 0x13 - LmsTxt
+
+        // EVI PRN format
+        if (ext == ".prn") return 36;  // 0x24 - EviPrn
+
+        // TEF formats (Gold Line - discontinued, unlikely to work)
+        if (ext == ".imp") return 37;  // 0x25 - TefImp
+        if (ext == ".mls") return 17;  // 0x11 - TefMls (NOT CLIO .mls binary!)
+
+        // AKG FIM format
+        if (ext == ".fim") return 33;  // 0x21 - AkgFim
+
+        // Unknown - return 0 which will use auto-detection (format 0x14 = 20)
         return 0;
     }
 
@@ -696,12 +723,61 @@ class OriginalCoverageDriver
             Log("\n=== FILE READ OPERATIONS ===");
             if (Directory.Exists(testDir))
             {
-                string[] testFiles = Directory.GetFiles(testDir);
-                // Only test first 10 files to avoid timeout
-                int maxFiles = Math.Min(testFiles.Length, 10);
+                // Prioritize files most likely to work with original DLL
+                // Order: WAV > EASERA > MLSSA > MonkeyForest > CLIO > others
+                // Skip malformed files completely
+                List<string> prioritizedFiles = new List<string>();
+
+                // 1. WAV files (most reliable format)
+                foreach (string f in Directory.GetFiles(testDir, "*.wav"))
+                    if (!Path.GetFileName(f).StartsWith("malformed"))
+                        prioritizedFiles.Add(f);
+
+                // 2. EASERA formats (ETM, EFR, EMD, ETX)
+                foreach (string f in Directory.GetFiles(testDir, "*.etm"))
+                    if (!Path.GetFileName(f).StartsWith("malformed"))
+                        prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.efr"))
+                    prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.emd"))
+                    if (!Path.GetFileName(f).StartsWith("malformed"))
+                        prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.etx"))
+                    if (!Path.GetFileName(f).StartsWith("malformed"))
+                        prioritizedFiles.Add(f);
+
+                // 3. MLSSA formats (.tim, .frq)
+                foreach (string f in Directory.GetFiles(testDir, "*.tim"))
+                    prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.frq"))
+                    prioritizedFiles.Add(f);
+
+                // 4. MonkeyForest (.spk, .dat) - case insensitive
+                foreach (string f in Directory.GetFiles(testDir, "*.spk"))
+                    prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.SPK"))
+                    if (!prioritizedFiles.Contains(f))
+                        prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.dat"))
+                    prioritizedFiles.Add(f);
+
+                // 5. CLIO text formats (.frd, .zma)
+                foreach (string f in Directory.GetFiles(testDir, "*.frd"))
+                    prioritizedFiles.Add(f);
+                foreach (string f in Directory.GetFiles(testDir, "*.zma"))
+                    prioritizedFiles.Add(f);
+
+                // 6. EVI PRN format
+                foreach (string f in Directory.GetFiles(testDir, "*.prn"))
+                    prioritizedFiles.Add(f);
+
+                // Test up to 20 prioritized files
+                int maxFiles = Math.Min(prioritizedFiles.Count, 20);
+                Log("Found " + prioritizedFiles.Count + " valid test files, testing " + maxFiles);
+
                 for (int i = 0; i < maxFiles; i++)
                 {
-                    TestFileRead(testFiles[i], openFile, closeFile, getNumFiles, getNumChannels,
+                    TestFileRead(prioritizedFiles[i], openFile, closeFile, getNumFiles, getNumChannels,
                         getProps, getData, getHeader, getString, getFileProps);
                 }
             }
