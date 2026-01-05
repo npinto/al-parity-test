@@ -582,23 +582,70 @@ class OriginalCoverageDriver
 
     static void PrintReport()
     {
-        Console.WriteLine("\n" + new string('=', 60));
-        Console.WriteLine("ORIGINAL DLL COVERAGE REPORT");
-        Console.WriteLine(new string('=', 60));
+        Console.WriteLine("\n" + new string('=', 70));
+        Console.WriteLine("ORIGINAL DLL FUNCTION COVERAGE REPORT");
+        Console.WriteLine(new string('=', 70));
 
+        // Group functions by category for clearer reporting
+        Console.WriteLine("\n--- INITIALIZATION ---");
+        PrintFunctionStatus("Aud_InitDll");
+        PrintFunctionStatus("Aud_GetInterfaceVersion");
+        PrintFunctionStatus("Aud_GetDllVersion");
+
+        Console.WriteLine("\n--- FILE READ OPERATIONS ---");
+        PrintFunctionStatus("Aud_OpenGetFile");
+        PrintFunctionStatus("Aud_CloseGetFile");
+        PrintFunctionStatus("Aud_GetNumberOfFiles");
+        PrintFunctionStatus("Aud_GetNumberOfChannels");
+        PrintFunctionStatus("Aud_GetChannelProperties");
+        PrintFunctionStatus("Aud_GetChannelDataDoubles");
+        PrintFunctionStatus("Aud_GetFileHeaderOriginal");
+        PrintFunctionStatus("Aud_GetString");
+
+        Console.WriteLine("\n--- FILE WRITE OPERATIONS ---");
+        PrintFunctionStatus("Aud_OpenPutFile");
+        PrintFunctionStatus("Aud_ClosePutFile");
+        PrintFunctionStatus("Aud_PutNumberOfChannels");
+        PrintFunctionStatus("Aud_PutFileProperties");
+        PrintFunctionStatus("Aud_PutChannelProperties");
+        PrintFunctionStatus("Aud_PutChannelDataDoubles");
+
+        Console.WriteLine("\n--- UTILITY FUNCTIONS ---");
+        PrintFunctionStatus("Aud_FileExistsW");
+        PrintFunctionStatus("Aud_MakeDirW");
+
+        Console.WriteLine("\n--- SKIPPED (require EASE context) ---");
+        Console.WriteLine("  [SKIP] Aud_GetFileProperties     - causes STATUS_BREAKPOINT crash");
+        Console.WriteLine("  [SKIP] Aud_GetErrDescription     - hangs (MFC CString)");
+        Console.WriteLine("  [SKIP] Aud_GetLastWarnings       - hangs (MFC CString)");
+        Console.WriteLine("  [SKIP] Aud_TextFileAOpenW        - hangs (EASE file system)");
+
+        // Count covered
         int covered = 0;
         foreach (KeyValuePair<string, bool> kvp in FunctionsCovered)
         {
             if (kvp.Value) covered++;
-            Console.WriteLine("  " + (kvp.Value ? "[OK]" : "[  ]") + " " + kvp.Key);
         }
 
-        Console.WriteLine("\n" + new string('-', 60));
-        Console.WriteLine("Functions covered: " + covered + "/" + FunctionsCovered.Count);
-        Console.WriteLine("Total DLL calls: " + TotalCalls);
-        Console.WriteLine("Successful calls: " + SuccessfulCalls);
-        Console.WriteLine("Success rate: " + (100.0 * SuccessfulCalls / Math.Max(TotalCalls, 1)).ToString("F1") + "%");
-        Console.WriteLine(new string('=', 60));
+        Console.WriteLine("\n" + new string('=', 70));
+        Console.WriteLine("SUMMARY");
+        Console.WriteLine(new string('-', 70));
+        Console.WriteLine("Functions tested:    " + covered + "/" + FunctionsCovered.Count + " (" + (100.0 * covered / FunctionsCovered.Count).ToString("F0") + "%)");
+        Console.WriteLine("Total DLL calls:     " + TotalCalls);
+        Console.WriteLine("Successful calls:    " + SuccessfulCalls);
+        Console.WriteLine("Success rate:        " + (100.0 * SuccessfulCalls / Math.Max(TotalCalls, 1)).ToString("F1") + "%");
+        Console.WriteLine("Skipped functions:   4 (require full EASE SpeakerLab context)");
+        Console.WriteLine(new string('=', 70));
+
+        // Machine-readable summary line for CI parsing
+        Console.WriteLine("\n[METRICS] covered=" + covered + " total=" + FunctionsCovered.Count + " calls=" + TotalCalls + " success=" + SuccessfulCalls);
+    }
+
+    static void PrintFunctionStatus(string funcName)
+    {
+        bool covered = FunctionsCovered.ContainsKey(funcName) && FunctionsCovered[funcName];
+        string status = covered ? "[OK]  " : "[    ]";
+        Console.WriteLine("  " + status + " " + funcName);
     }
 
     static int Main(string[] args)

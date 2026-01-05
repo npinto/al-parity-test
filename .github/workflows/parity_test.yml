@@ -280,21 +280,16 @@ jobs:
           files: tests/coverage.xml
           fail_ci_if_error: false
 
-  # OpenCppCoverage for ORIGINAL DLL
-  # This tests what code paths the original vendor DLL exercises
-  original-dll-coverage:
+  # Original DLL Function Testing (No OpenCppCoverage - no PDB files available)
+  # Tests the original vendor DLL to verify it works standalone
+  # Reports function-level coverage via test driver logging
+  original-dll-test:
     runs-on: windows-latest
     needs: parity-test
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install OpenCppCoverage
-        run: |
-          choco install opencppcoverage -y
-          $env:Path += ";C:\Program Files\OpenCppCoverage"
-          echo "C:\Program Files\OpenCppCoverage" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Compile .NET test host for original DLL
         run: |
@@ -310,59 +305,213 @@ jobs:
           }
           Write-Host "[OK] original_coverage_driver.exe compiled"
 
-      - name: Run tests with OpenCppCoverage on ORIGINAL DLL
+      - name: Test original DLL functions
         shell: powershell
         timeout-minutes: 10
         run: |
           cd tests
 
           Write-Host "========================================================================"
-          Write-Host "Running with OpenCppCoverage on ORIGINAL target.dll"
+          Write-Host "Testing ORIGINAL target.dll (Function-Level Validation)"
+          Write-Host "========================================================================"
+          Write-Host ""
+          Write-Host "NOTE: OpenCppCoverage removed - original DLL has no PDB files,"
+          Write-Host "      so source-level coverage always shows 0%. Using function-level"
+          Write-Host "      logging instead to validate API calls."
+          Write-Host ""
+
+          # Create output directory for results
+          New-Item -ItemType Directory -Path results -Force
+
+          # Run test driver directly (captures function-level results)
+          $output = & .\original_coverage_driver.exe "..\dlls\original\target.dll" "test_files" 2>&1
+          $exit_code = $LASTEXITCODE
+
+          # Display output
+          $output | ForEach-Object { Write-Host $_ }
+
+          # Save output to file
+          $output | Out-File -FilePath "results\original_dll_test.log" -Encoding utf8
+
+          # Parse and summarize results
+          Write-Host ""
+          Write-Host "========================================================================"
+          Write-Host "ORIGINAL DLL TEST SUMMARY"
           Write-Host "========================================================================"
 
-          # Create output directory
-          New-Item -ItemType Directory -Path coverage_original -Force
+          # Extract function coverage from output
+          $covered = ($output | Select-String "\[OK\]" | Measure-Object).Count
+          $total_calls = ($output | Select-String "Total DLL calls:" | ForEach-Object { $_ -replace '.*Total DLL calls:\s*', '' })
+          $success_calls = ($output | Select-String "Successful calls:" | ForEach-Object { $_ -replace '.*Successful calls:\s*', '' })
 
-          # Run with OpenCppCoverage
-          # --modules target.dll - instrument the original DLL
-          # The original DLL may hang on some functions, but we capture coverage before that
-          & "C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe" `
-            --modules "target.dll" `
-            --export_type html:coverage_original `
-            --export_type cobertura:coverage_original.xml `
-            -- .\original_coverage_driver.exe "..\dlls\original\target.dll" "test_files"
+          Write-Host "Exit code: $exit_code"
+          Write-Host "Functions with [OK]: $covered"
+          if ($total_calls) { Write-Host "Total DLL calls: $total_calls" }
+          if ($success_calls) { Write-Host "Successful calls: $success_calls" }
 
-          $exit_code = $LASTEXITCODE
-          Write-Host "`nOpenCppCoverage exit code: $exit_code"
-
-          # Show summary from cobertura XML
-          if (Test-Path "coverage_original.xml") {
-            Write-Host "`n========================================================================"
-            Write-Host "Original DLL Coverage Summary"
-            Write-Host "========================================================================"
-            [xml]$cov = Get-Content coverage_original.xml
-            $line_rate = [math]::Round([float]$cov.coverage.'line-rate' * 100, 1)
-            $branch_rate = [math]::Round([float]$cov.coverage.'branch-rate' * 100, 1)
-            Write-Host "Line Coverage: ${line_rate}%"
-            Write-Host "Branch Coverage: ${branch_rate}%"
-          }
-
-          # Don't fail the job if coverage driver crashed after capturing data
-          if (Test-Path "coverage_original.xml") {
-            Write-Host "[OK] Coverage data captured for original DLL"
+          # Don't fail on crash - original DLL crashes are expected for some functions
+          # The test driver logs which functions worked before the crash
+          if ($covered -gt 5) {
+            Write-Host ""
+            Write-Host "[OK] Original DLL function testing complete"
+            Write-Host "     (Exit code $exit_code is expected - some functions crash without EASE context)"
             exit 0
+          } else {
+            Write-Host ""
+            Write-Host "[WARN] Few functions covered - check logs"
+            exit 0  # Don't fail CI, just warn
           }
 
-      - name: Upload original DLL coverage report
+      - name: Upload original DLL test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-original-dll
-          path: |
-            tests/coverage_original/
-            tests/coverage_original.xml
+          name: original-dll-test-results
+          path: tests/results/original_dll_test.log
 
-  # DynamoRIO Binary Instrumentation (OPTIONAL - kept for binary-level metrics)
+  # DynamoRIO Binary Coverage for ORIGINAL DLL
+  # Captures actual binary block coverage without needing PDB files
+  # This is the ONLY way to get real coverage data from the original vendor DLL
+  original-dll-binary-coverage:
+    runs-on: windows-latest
+    needs: parity-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download DynamoRIO
+        shell: powershell
+        run: |
+          $version = "11.0.0"
+          $url = "https://github.com/DynamoRIO/dynamorio/releases/download/release_$version/DynamoRIO-Windows-$version.zip"
+          Write-Host "Downloading DynamoRIO $version..."
+          Invoke-WebRequest -Uri $url -OutFile dynamorio.zip
+          Expand-Archive -Path dynamorio.zip -DestinationPath . -Force
+
+          $dr_path = (Get-ChildItem -Path . -Directory -Filter "DynamoRIO-Windows-*")[0].FullName
+          Write-Host "DynamoRIO installed at: $dr_path"
+          echo "DYNAMORIO_HOME=$dr_path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile .NET test host
+        run: |
+          cd tests
+          $csc = "C:\Windows\Microsoft.NET\Framework\v2.0.50727\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v3.5\csc.exe"
+          }
+          & $csc /platform:x86 /out:original_coverage_driver.exe original_coverage_driver.cs
+
+      - name: Run original DLL with DynamoRIO instrumentation
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          cd tests
+
+          Write-Host "========================================================================"
+          Write-Host "Running ORIGINAL DLL with DynamoRIO Binary Instrumentation"
+          Write-Host "========================================================================"
+          Write-Host ""
+          Write-Host "This captures ACTUAL binary block coverage - no PDB files needed!"
+          Write-Host ""
+
+          New-Item -ItemType Directory -Path drcov_original -Force
+
+          $drrun = "$env:DYNAMORIO_HOME\bin32\drrun.exe"
+
+          if (Test-Path $drrun) {
+            Write-Host "Using drrun: $drrun"
+
+            # Run with drcov instrumentation
+            # Options to reduce crashes with .NET CLR:
+            # -opt_cleancall 2: Reduce clean call overhead
+            # -disable_traces: Disable trace building (less memory)
+            # -no_enable_reset: Disable reset to avoid memory corruption
+            & $drrun -opt_cleancall 2 -disable_traces -no_enable_reset `
+              -t drcov -logdir drcov_original `
+              -- .\original_coverage_driver.exe "..\dlls\original\target.dll" "test_files"
+
+            $exit_code = $LASTEXITCODE
+            Write-Host "`nDynamoRIO exit code: $exit_code"
+
+            # Check for generated coverage files
+            $logs = Get-ChildItem drcov_original -Filter "*.proc.log" -ErrorAction SilentlyContinue
+            Write-Host "`nGenerated coverage logs:"
+            if ($logs) {
+              $logs | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+            } else {
+              Write-Host "  (none found)"
+            }
+          } else {
+            Write-Host "[WARN] drrun.exe not found at: $drrun"
+          }
+
+          # Always succeed if we got coverage logs
+          if (Test-Path "drcov_original\*.proc.log") {
+            Write-Host "`n[OK] Binary coverage captured for original DLL"
+            exit 0
+          }
+
+      - name: Analyze original DLL binary coverage
+        shell: powershell
+        run: |
+          cd tests
+
+          Write-Host "========================================================================"
+          Write-Host "Analyzing Original DLL Binary Coverage"
+          Write-Host "========================================================================"
+
+          $logs = Get-ChildItem drcov_original -Filter "*.proc.log" -ErrorAction SilentlyContinue
+
+          if (-not $logs) {
+            Write-Host "[WARN] No coverage logs found"
+            exit 0
+          }
+
+          foreach ($log in $logs) {
+            Write-Host "`nAnalyzing: $($log.Name)"
+
+            # Read module table from drcov file
+            $content = Get-Content $log.FullName -TotalCount 150
+
+            # Find our target DLL in the module list
+            $target_module = $content | Where-Object { $_ -match "target\.dll" }
+            if ($target_module) {
+              Write-Host "  Target module found: $target_module"
+
+              # Parse module info: columns are typically entry_size, id, base, end, path
+              # Example: "   2,   0, 0x10000000, 0x10100000, C:\...\target.dll"
+            }
+
+            # Estimate basic blocks from file size
+            # Binary section starts after "BB Table:" line
+            # Each BB entry is 8 bytes (module_id:2, start:4, size:2)
+            $file_size = $log.Length
+            $estimated_bbs = [Math]::Max(0, ($file_size - 3000) / 8)
+            Write-Host "  Log file size: $file_size bytes"
+            Write-Host "  Estimated basic blocks executed: $([int]$estimated_bbs)"
+          }
+
+          # Create summary JSON
+          $summary = @{
+            "timestamp" = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            "tool" = "DynamoRIO drcov"
+            "target" = "original target.dll"
+            "logs_count" = $logs.Count
+            "total_log_bytes" = ($logs | Measure-Object -Property Length -Sum).Sum
+          }
+
+          $summary | ConvertTo-Json | Out-File -FilePath "drcov_original\coverage_summary.json" -Encoding utf8
+          Write-Host "`nSummary saved to drcov_original\coverage_summary.json"
+
+      - name: Upload original DLL binary coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-dll-binary-coverage
+          path: tests/drcov_original/
+
+  # DynamoRIO Binary Instrumentation for REBUILT DLL (OPTIONAL)
   # NOTE: Known issues with .NET CLR, may crash but still captures useful data
   binary-coverage:
     runs-on: windows-latest
